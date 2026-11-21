@@ -6,22 +6,28 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dev.minelink.velocity.config.MineLinkConfig;
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,11 +41,14 @@ class LocalSessionServerTest {
     }
 
     private HttpServer mockUpstreamServer;
+    private ExecutorService mockExecutor;
     private HasJoinedRelay relay;
+    private AtomicReference<MineLinkConfig> configRef;
     private LocalSessionServer localServer;
     private HttpClient velocityClient;
     private Map<String, MockHandler> handlers;
     private Map<String, List<String>> hits;
+    private List<String> arrivalOrder;
     private byte[] profileBytes;
     private String mockBase;
 
@@ -50,17 +59,23 @@ class LocalSessionServerTest {
         }
         handlers = new ConcurrentHashMap<>();
         hits = new ConcurrentHashMap<>();
+        arrivalOrder = new CopyOnWriteArrayList<>();
 
-        mockUpstreamServer = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-        mockUpstreamServer.setExecutor(Executors.newCachedThreadPool(r -> {
+        mockExecutor = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r, "mock-upstream");
             t.setDaemon(true);
             return t;
-        }));
+        });
+        mockUpstreamServer = HttpServer.create(
+            new InetSocketAddress(InetAddress.getByAddress(new byte[] {127, 0, 0, 1}), 0),
+            0
+        );
+        mockUpstreamServer.setExecutor(mockExecutor);
         mockUpstreamServer.createContext("/", exchange -> {
             String path = exchange.getRequestURI().getRawPath();
             String[] parts = path.split("/");
             String id = parts.length > 1 ? parts[1] : "";
+            arrivalOrder.add(id);
             hits.computeIfAbsent(id, k -> new CopyOnWriteArrayList<>())
                 .add(exchange.getRequestURI().getRawQuery());
             MockHandler h = handlers.get(id);
@@ -75,8 +90,9 @@ class LocalSessionServerTest {
         mockBase = "http://127.0.0.1:" + mockUpstreamServer.getAddress().getPort();
 
         relay = new HasJoinedRelay();
+        configRef = new AtomicReference<>(config(List.of("minehut", "minekeep")));
         localServer = new LocalSessionServer(
-            config(List.of("minehut", "minekeep")),
+            configRef::get,
             relay,
             LoggerFactory.getLogger(LocalSessionServerTest.class)
         );
@@ -89,6 +105,7 @@ class LocalSessionServerTest {
         localServer.close();
         relay.close();
         mockUpstreamServer.stop(0);
+        mockExecutor.shutdownNow();
     }
 
     private MineLinkConfig config(List<String> order) {
@@ -113,7 +130,8 @@ class LocalSessionServerTest {
     }
 
     private HttpResponse<byte[]> getHasJoined(String query) throws Exception {
-        HttpRequest req = HttpRequest.newBuilder(URI.create(localServer.sessionServerUrl() + "?" + query))
+        String url = query == null ? localServer.sessionServerUrl() : localServer.sessionServerUrl() + "?" + query;
+        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
             .GET()
             .header("User-Agent", "Velocity/4.3.1")
             .build();
@@ -135,9 +153,22 @@ class LocalSessionServerTest {
             HttpResponse.BodyHandlers.ofByteArray()
         );
         assertEquals(405, wrongMethod.statusCode());
+        assertEquals("GET", wrongMethod.headers().firstValue("allow").orElse(""));
 
+        assertEquals(400, getHasJoined(null).statusCode());
         assertEquals(400, getHasJoined("username=Notch").statusCode());
         assertEquals(400, getHasJoined("username=" + "a".repeat(65) + "&serverId=1").statusCode());
+        assertEquals(400, getHasJoined("username=Notch&serverId=" + "b".repeat(65)).statusCode());
+
+        String path = URI.create(localServer.sessionServerUrl()).getRawPath();
+        try (Socket socket = new Socket("127.0.0.1", localServer.port())) {
+            OutputStream out = socket.getOutputStream();
+            out.write(("GET " + path + "?username=%ZZ&serverId=1 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+                .getBytes(StandardCharsets.US_ASCII));
+            out.flush();
+            String statusLine = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII)).readLine();
+            assertEquals(true, statusLine != null && statusLine.contains("400"), "statusLine=" + statusLine);
+        }
     }
 
     @Test
@@ -151,6 +182,7 @@ class LocalSessionServerTest {
         assertEquals("minekeep", res.headers().firstValue("x-minelink-upstream").orElse(""));
         assertEquals("no-store", res.headers().firstValue("cache-control").orElse(""));
         assertArrayEquals(profileBytes, res.body());
+        assertEquals(List.of("minehut", "minekeep"), arrivalOrder);
         assertEquals(List.of(rawQuery), hits.get("minehut"));
         assertEquals(List.of(rawQuery), hits.get("minekeep"));
     }
@@ -169,7 +201,7 @@ class LocalSessionServerTest {
         assertEquals(503, errored.statusCode());
         assertEquals(0, errored.body().length);
 
-        localServer.updateConfig(config(List.of("minehut")));
+        configRef.set(config(List.of("minehut")));
         hits.clear();
         assertEquals(204, getHasJoined("username=Notch&serverId=3").statusCode());
         assertEquals(1, hits.get("minehut").size());
@@ -177,7 +209,7 @@ class LocalSessionServerTest {
     }
 
     @Test
-    void alwaysQueriesMinehutFirstAndHandlesConcurrentLogins() throws Exception {
+    void handlesConcurrentLogins() throws Exception {
         handlers.put("minekeep", ex -> sendBytes(ex, 200, profileBytes));
 
         List<CompletableFuture<HttpResponse<byte[]>>> futures = new ArrayList<>();

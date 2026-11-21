@@ -33,4 +33,4 @@ jobs:
           distribution: temurin
           java-version: ${{ matrix.java }}
           cache: gradle
-      - run: ./gradlew check build
+      - run: ./gradlew build

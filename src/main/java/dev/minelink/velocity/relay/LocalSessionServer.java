@@ -16,7 +16,7 @@ import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 
 public final class LocalSessionServer implements AutoCloseable {
@@ -28,13 +28,17 @@ public final class LocalSessionServer implements AutoCloseable {
     private final ExecutorService serverExecutor;
     private final HasJoinedRelay relay;
     private final Logger logger;
-    private final AtomicReference<MineLinkConfig> configRef;
+    private final Supplier<MineLinkConfig> configSupplier;
     private final String expectedPath;
     private final byte[] expectedPathBytes;
     private final int port;
 
-    public LocalSessionServer(MineLinkConfig initialConfig, HasJoinedRelay relay, Logger logger) throws IOException {
-        this.configRef = new AtomicReference<>(Objects.requireNonNull(initialConfig, "initialConfig"));
+    public LocalSessionServer(
+        Supplier<MineLinkConfig> configSupplier,
+        HasJoinedRelay relay,
+        Logger logger
+    ) throws IOException {
+        this.configSupplier = Objects.requireNonNull(configSupplier, "configSupplier");
         this.relay = Objects.requireNonNull(relay, "relay");
         this.logger = Objects.requireNonNull(logger, "logger");
 
@@ -72,10 +76,6 @@ public final class LocalSessionServer implements AutoCloseable {
         return "http://127.0.0.1:" + port + expectedPath;
     }
 
-    public void updateConfig(MineLinkConfig config) {
-        configRef.set(Objects.requireNonNull(config, "config"));
-    }
-
     @Override
     public void close() {
         server.stop(0);
@@ -105,36 +105,37 @@ public final class LocalSessionServer implements AutoCloseable {
                 return;
             }
 
-            MineLinkConfig config = configRef.get();
-            relay.fanOut(config.orderedUpstreams(), rawQuery, config).whenComplete((result, throwable) -> {
-                try {
-                    if (throwable != null) {
-                        logger.warn("Session verification failed: {}", throwable.getMessage());
-                        sendEmpty(exchange, 503);
-                    } else if (result instanceof HasJoinedRelay.Result.Match match) {
-                        byte[] body = match.body();
-                        exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
-                        exchange.getResponseHeaders().set("Cache-Control", "no-store");
-                        exchange.getResponseHeaders().set("X-MineLink-Upstream", match.upstream());
-                        exchange.sendResponseHeaders(200, body.length);
-                        try (OutputStream out = exchange.getResponseBody()) {
-                            out.write(body);
-                        }
-                    } else if (result instanceof HasJoinedRelay.Result.NoMatch) {
-                        sendEmpty(exchange, 204);
-                    } else if (result instanceof HasJoinedRelay.Result.Error err) {
-                        // Velocity treats 204 as "online mode only" and non-200/204 as "authentication servers are down".
-                        logger.warn("Session verification failed ({})", err.summary());
-                        sendEmpty(exchange, 503);
-                    }
-                } catch (Exception e) {
-                    logger.error("Failed writing hasJoined response to Velocity", e);
+            MineLinkConfig config = configSupplier.get();
+            relay.fanOut(config.orderedUpstreams(), rawQuery, config)
+                .whenCompleteAsync((result, throwable) -> {
                     try {
-                        exchange.close();
-                    } catch (Exception ignored) {
+                        if (throwable != null) {
+                            logger.warn("Session verification failed: {}", throwable.getMessage());
+                            sendEmpty(exchange, 503);
+                        } else if (result instanceof HasJoinedRelay.Result.Match match) {
+                            byte[] body = match.body();
+                            exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+                            exchange.getResponseHeaders().set("Cache-Control", "no-store");
+                            exchange.getResponseHeaders().set("X-MineLink-Upstream", match.upstream());
+                            exchange.sendResponseHeaders(200, body.length);
+                            try (OutputStream out = exchange.getResponseBody()) {
+                                out.write(body);
+                            }
+                        } else if (result instanceof HasJoinedRelay.Result.NoMatch) {
+                            sendEmpty(exchange, 204);
+                        } else if (result instanceof HasJoinedRelay.Result.Error err) {
+                            // Velocity treats 204 as "online mode only" and non-200/204 as "authentication servers are down".
+                            logger.warn("Session verification failed ({})", err.summary());
+                            sendEmpty(exchange, 503);
+                        }
+                    } catch (Exception e) {
+                        logger.error("Failed writing hasJoined response to Velocity", e);
+                        try {
+                            exchange.close();
+                        } catch (Exception ignored) {
+                        }
                     }
-                }
-            });
+                }, serverExecutor);
         } catch (Exception e) {
             logger.error("Failed handling local session request", e);
             try {

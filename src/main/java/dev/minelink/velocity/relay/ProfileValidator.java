@@ -26,7 +26,7 @@ public final class ProfileValidator {
         JsonElement root;
         try {
             root = JsonParser.parseString(decoded);
-        } catch (JsonParseException | IllegalStateException e) {
+        } catch (JsonParseException | IllegalStateException | StackOverflowError e) {
             return false;
         }
         if (root == null || !root.isJsonObject()) {

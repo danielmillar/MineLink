@@ -16,6 +16,8 @@ import dev.minelink.velocity.relay.HasJoinedRelay;
 import dev.minelink.velocity.relay.LocalSessionServer;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 
@@ -30,14 +32,26 @@ public final class MineLinkPlugin {
 
     public static final String SESSION_SERVER_PROPERTY = "mojang.sessionserver";
 
+    public enum Status {
+        ACTIVE,
+        EXTERNAL_PROPERTY,
+        NOT_STARTED
+    }
+
+    public record ReloadResult(String error, List<String> warnings) {
+        public boolean ok() {
+            return error == null;
+        }
+    }
+
     private final ProxyServer proxy;
     private final Logger logger;
     private final Path dataDirectory;
     private final AtomicReference<MineLinkConfig> configRef = new AtomicReference<>(MineLinkConfig.defaults());
 
-    private HasJoinedRelay relay;
-    private LocalSessionServer sessionServer;
-    private volatile boolean hooked = false;
+    private volatile HasJoinedRelay relay;
+    private volatile LocalSessionServer sessionServer;
+    private volatile Status status = Status.NOT_STARTED;
 
     @Inject
     public MineLinkPlugin(ProxyServer proxy, Logger logger, @DataDirectory Path dataDirectory) {
@@ -50,9 +64,9 @@ public final class MineLinkPlugin {
     public void onProxyInitialize(ProxyInitializeEvent event) {
         MineLinkConfig config;
         try {
-            config = MineLinkConfig.loadOrCreate(dataDirectory);
+            config = MineLinkConfig.loadOrCreate(dataDirectory, logger::warn);
         } catch (IOException | IllegalArgumentException e) {
-            logger.error("Failed to load MineLink config.toml; plugin will not start: {}", e.getMessage(), e);
+            logger.error("Failed to load MineLink config.toml; plugin will not start: {}", errorMessage(e), e);
             return;
         }
         configRef.set(config);
@@ -69,39 +83,47 @@ public final class MineLinkPlugin {
                 existingProperty,
                 SESSION_SERVER_PROPERTY
             );
+            this.status = Status.EXTERNAL_PROPERTY;
             registerCommand();
             return;
         }
 
         try {
-            this.relay = new HasJoinedRelay();
-            this.sessionServer = new LocalSessionServer(config, relay, logger);
-            this.sessionServer.start();
+            HasJoinedRelay newRelay = new HasJoinedRelay();
+            this.relay = newRelay;
+            LocalSessionServer newServer = new LocalSessionServer(configRef::get, newRelay, logger);
+            this.sessionServer = newServer;
+            newServer.start();
         } catch (IOException e) {
             logger.error("Failed to bind local loopback session server on 127.0.0.1", e);
             shutdownResources();
             return;
         }
 
-        System.setProperty(SESSION_SERVER_PROPERTY, sessionServer.sessionServerUrl());
-        this.hooked = true;
+        LocalSessionServer activeServer = this.sessionServer;
+        System.setProperty(SESSION_SERVER_PROPERTY, activeServer.sessionServerUrl());
+        this.status = Status.ACTIVE;
         registerCommand();
 
         logger.info(
             "MineLink v{} active on 127.0.0.1:{} (order={})",
             BuildConstants.VERSION,
-            sessionServer.port(),
+            activeServer.port(),
             String.join(" -> ", config.order())
         );
     }
 
     @Subscribe
     public void onProxyReload(ProxyReloadEvent event) {
-        String error = reloadConfig();
-        if (error == null) {
-            logger.info("Reloaded MineLink configuration.");
+        ReloadResult result = reloadConfig();
+        if (result.ok()) {
+            if (status == Status.ACTIVE) {
+                logger.info("Reloaded MineLink configuration.");
+            } else {
+                logger.info("Reloaded MineLink configuration (plugin is currently inactive).");
+            }
         } else {
-            logger.error("Failed to reload MineLink configuration: {}", error);
+            logger.error("Failed to reload MineLink configuration: {}", result.error());
         }
     }
 
@@ -110,16 +132,17 @@ public final class MineLinkPlugin {
         shutdownResources();
     }
 
-    public String reloadConfig() {
+    public ReloadResult reloadConfig() {
+        List<String> warnings = new ArrayList<>();
         try {
-            MineLinkConfig reloaded = MineLinkConfig.loadOrCreate(dataDirectory);
+            MineLinkConfig reloaded = MineLinkConfig.loadOrCreate(dataDirectory, warning -> {
+                warnings.add(warning);
+                logger.warn(warning);
+            });
             configRef.set(reloaded);
-            if (sessionServer != null) {
-                sessionServer.updateConfig(reloaded);
-            }
-            return null;
+            return new ReloadResult(null, List.copyOf(warnings));
         } catch (IOException | IllegalArgumentException e) {
-            return e.getMessage();
+            return new ReloadResult(errorMessage(e), List.copyOf(warnings));
         }
     }
 
@@ -127,12 +150,13 @@ public final class MineLinkPlugin {
         return configRef.get();
     }
 
-    public boolean isHooked() {
-        return hooked;
+    public Status status() {
+        return status;
     }
 
     public int loopbackPort() {
-        return sessionServer != null ? sessionServer.port() : -1;
+        LocalSessionServer server = this.sessionServer;
+        return server != null ? server.port() : -1;
     }
 
     public boolean isOnlineMode() {
@@ -148,14 +172,21 @@ public final class MineLinkPlugin {
     }
 
     private void shutdownResources() {
-        hooked = false;
-        if (sessionServer != null) {
-            sessionServer.close();
-            sessionServer = null;
+        status = Status.NOT_STARTED;
+        LocalSessionServer server = this.sessionServer;
+        this.sessionServer = null;
+        if (server != null) {
+            server.close();
         }
-        if (relay != null) {
-            relay.close();
-            relay = null;
+        HasJoinedRelay currentRelay = this.relay;
+        this.relay = null;
+        if (currentRelay != null) {
+            currentRelay.close();
         }
+    }
+
+    private static String errorMessage(Throwable e) {
+        String msg = e.getMessage();
+        return (msg == null || msg.isBlank()) ? e.getClass().getSimpleName() : msg;
     }
 }

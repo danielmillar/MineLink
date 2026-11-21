@@ -1,7 +1,7 @@
 name: Release
 
 # Trigger either by pushing a matching tag (`git tag v1.0.0 && git push origin v1.0.0`)
-# or via workflow_dispatch (which tags HEAD at `v<version>` from gradle.properties).
+# or via workflow_dispatch from `main` (which tags HEAD at `v<version>` from gradle.properties).
 on:
   push:
     tags: ['v*']
@@ -10,9 +10,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Publish release
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -22,7 +27,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-          cache: gradle
       - name: Resolve and validate release version
         id: version
         run: |
@@ -32,31 +36,36 @@ jobs:
             exit 1
           fi
           tag="v$version"
+          tag_exists=false
           if [ "$GITHUB_EVENT_NAME" = "push" ]; then
             if [ "$tag" != "$GITHUB_REF_NAME" ]; then
               echo "Tag $GITHUB_REF_NAME does not match version $version in gradle.properties"
               exit 1
             fi
-          else
-            if git rev-parse "$tag" >/dev/null 2>&1; then
-              echo "Tag $tag already exists"
+            tag_exists=true
+          elif git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            existing_sha=$(git rev-parse "refs/tags/$tag^{commit}")
+            if [ "$existing_sha" != "$GITHUB_SHA" ]; then
+              echo "Tag $tag already exists on $existing_sha (expected $GITHUB_SHA)"
               exit 1
             fi
+            tag_exists=true
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-      - run: ./gradlew check build
-      - name: Create the release
+          echo "tag_exists=$tag_exists" >> "$GITHUB_OUTPUT"
+      - run: ./gradlew build
+      - name: Tag and create the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
+          TAG_EXISTS: ${{ steps.version.outputs.tag_exists }}
           JAR: build/libs/minelink-${{ steps.version.outputs.version }}.jar
         run: |
           sha256sum "$JAR" | sed 's#build/libs/##' > "$JAR.sha256"
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            gh release create "$TAG" "$JAR" "$JAR.sha256" \
-              --verify-tag --generate-notes --title "MineLink $TAG"
-          else
-            gh release create "$TAG" "$JAR" "$JAR.sha256" \
-              --target "$GITHUB_SHA" --generate-notes --title "MineLink $TAG"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$TAG_EXISTS" != "true" ]; then
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
           fi
+          gh release create "$TAG" "$JAR" "$JAR.sha256" \
+            --verify-tag --generate-notes --title "MineLink $TAG"
