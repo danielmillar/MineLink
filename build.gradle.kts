@@ -47,11 +47,7 @@ val generateBuildConstants by tasks.registering {
 }
 
 sourceSets.main {
-    java.srcDir(generatedSrcDir)
-}
-
-tasks.named("compileJava") {
-    dependsOn(generateBuildConstants)
+    java.srcDir(generateBuildConstants)
 }
 
 tasks.withType<JavaCompile>().configureEach {

@@ -40,11 +40,18 @@ public final class MineLinkCommand implements SimpleCommand {
             return;
         }
         if ("reload".equalsIgnoreCase(args[0])) {
-            String error = plugin.reloadConfig();
-            if (error == null) {
-                source.sendMessage(prefix().append(Component.text("Config reloaded.", SUCCESS)));
+            MineLinkPlugin.ReloadResult result = plugin.reloadConfig();
+            if (result.ok()) {
+                if (plugin.status() == MineLinkPlugin.Status.ACTIVE) {
+                    source.sendMessage(prefix().append(Component.text("Config reloaded.", SUCCESS)));
+                } else {
+                    source.sendMessage(prefix().append(Component.text("Config reloaded (plugin is inactive).", WARN)));
+                }
+                for (String warning : result.warnings()) {
+                    source.sendMessage(Component.text("Warning: " + warning, WARN));
+                }
             } else {
-                source.sendMessage(prefix().append(Component.text("Reload failed: " + error, ERROR)));
+                source.sendMessage(prefix().append(Component.text("Reload failed: " + result.error(), ERROR)));
             }
             return;
         }
@@ -71,21 +78,24 @@ public final class MineLinkCommand implements SimpleCommand {
 
     private void sendStatus(CommandSource source) {
         MineLinkConfig config = plugin.currentConfig();
+        MineLinkPlugin.Status status = plugin.status();
 
         Component header = Component.text()
             .append(Component.text("MineLink", ACCENT, TextDecoration.BOLD))
             .append(Component.text(" v" + BuildConstants.VERSION, MUTED))
             .append(Component.text(" · ", DIM))
-            .append(plugin.isHooked()
+            .append(status == MineLinkPlugin.Status.ACTIVE
                 ? Component.text("Active", SUCCESS)
                 : Component.text("Inactive", ERROR))
             .build();
         source.sendMessage(header);
 
-        if (plugin.isHooked()) {
+        if (status == MineLinkPlugin.Status.ACTIVE) {
             source.sendMessage(field("Loopback", "127.0.0.1:" + plugin.loopbackPort()));
-        } else {
+        } else if (status == MineLinkPlugin.Status.EXTERNAL_PROPERTY) {
             source.sendMessage(Component.text("External -Dmojang.sessionserver is set", ERROR));
+        } else {
+            source.sendMessage(Component.text("Loopback server is not running", ERROR));
         }
 
         if (!plugin.isOnlineMode()) {

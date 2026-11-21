@@ -2,7 +2,7 @@
 
 MineLink is a Velocity plugin that verifies player logins against both [Minehut](https://minehut.com) and [MineKeep](https://minekeep.net) directly from your own proxy—no third-party session relay, no custom proxy fork.
 
-Any hosted relay sits in a position of complete trust: whoever runs the session server can vouch for any player on every server pointing at it. Moving that lookup inside your proxy takes the middleman out. Your Velocity instance talks straight to Minehut and MineKeep over HTTPS, and because the plugin relies only on public Velocity APIs, you stay on upstream Velocity 3.x or 4.x and update normally when PaperMC cuts a release.
+Any hosted relay sits in a position of complete trust: whoever runs the session server can vouch for any player on every server pointing at it. Moving that lookup inside your proxy takes the middleman out. Your Velocity instance talks straight to Minehut and MineKeep over HTTPS, and because the plugin relies only on public Velocity APIs, you stay on upstream Velocity 3.4+ or 4.x and update normally when PaperMC cuts a release.
 
 MineLink is an independent project and isn't affiliated with Minehut, MineKeep, PaperMC, or Mojang.
 
@@ -18,11 +18,11 @@ Disconnect codes stay accurate too. Velocity receives `204` ("online mode only")
 
 ## Setup
 
-You'll need Java 17 or later and Velocity 3.3+ or 4.x (compiled against Velocity API 3.4.0 as Java 17 bytecode).
+You'll need Velocity 3.4+ (Java 17+) or Velocity 4.x (Java 25); MineLink compiles against Velocity API 3.4.0 to Java 17 bytecode so the same JAR runs on both.
 
 1. Download the latest `minelink-<version>.jar` release (or build it from source) and drop it into `plugins/`.
 2. Remove any `-Dmojang.sessionserver` flag from your startup script. If that property is already set at boot, the plugin leaves it alone and logs a warning instead of fighting your launch flags.
-3. In `velocity.toml`, keep `online-mode = true`. If you accept Minehut players alongside MineKeep, turn on `haproxy-protocol = true` in `velocity.toml` and enable PROXY protocol in MineKeep's panel too—Minehut requires it, and Velocity applies it to every incoming connection.
+3. In `velocity.toml`, keep `online-mode = true`. If you accept Minehut players alongside MineKeep, turn on `haproxy-protocol = true` in `velocity.toml` and enable PROXY protocol in MineKeep's panel too—Minehut requires it, and Velocity applies it to every incoming connection. Firewall the Velocity listener so only trusted Minehut and MineKeep ingress can reach it; anyone connecting directly to an exposed PROXY-protocol port can spoof player IPs.
 4. Start Velocity. On first boot, a default `plugins/minelink/config.toml` is created and the log prints:
 
 ```text
@@ -62,7 +62,7 @@ order = ["minehut", "custom", "minekeep"]
 custom = "https://sessions.example.com/session/minecraft/hasJoined"
 ```
 
-Keep in mind that any upstream listed in `order` can authenticate players on your proxy, so only add endpoints you trust. Upstream IDs must match `^[a-z0-9-]{1,32}$`, and URLs must be absolute `http` or `https` endpoints with a host—strip query strings and fragments, and don't embed credentials in the URL.
+Keep in mind that any upstream listed in `order` can authenticate players on your proxy, so only add endpoints you trust. Upstream IDs must match `^[a-z0-9-]{1,32}$`, and URLs must be absolute `https://` endpoints with a valid host and port (`http://` is only allowed for loopback hosts)—strip query strings and fragments, and don't embed credentials in the URL.
 
 Edit `config.toml` and run `/minelink reload` (or `/velocity reload`) to apply changes live without changing the loopback port or path token. If the updated file fails validation, the previous config stays active and the error prints to chat or the log. If the file is broken at initial startup, the error goes to the log and neither the loopback hook nor `/minelink` registers.
 
@@ -80,7 +80,7 @@ When a join fails with an upstream error, the log prints `Session verification f
 Requires JDK 17 or later (CI builds and runs the JUnit 5 suite on Java 17, 21, and 25):
 
 ```sh
-./gradlew check build
+./gradlew build
 ```
 
 Gradle outputs `build/libs/minelink-<version>.jar`, using the version in `gradle.properties`.

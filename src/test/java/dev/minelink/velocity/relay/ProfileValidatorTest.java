@@ -68,5 +68,7 @@ class ProfileValidatorTest {
         for (String body : invalid) {
             assertFalse(ProfileValidator.isValid(body.getBytes(StandardCharsets.UTF_8)), "Expected invalid: " + body);
         }
+        String deeplyNested = "[".repeat(10_000) + "]".repeat(10_000);
+        assertFalse(ProfileValidator.isValid(deeplyNested.getBytes(StandardCharsets.UTF_8)));
     }
 }
