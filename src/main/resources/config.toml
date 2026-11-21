@@ -1,0 +1,8 @@
+order = ["minehut", "minekeep"]
+upstream-timeout-ms = 3500
+stagger-ms = 250
+deadline-ms = 4500
+
+[upstreams]
+minehut = "https://api.minehut.com/mitm/proxy/session/minecraft/hasJoined"
+minekeep = "https://sessionserver.minekeep.net/session/minecraft/hasJoined"
