@@ -1,8 +1,8 @@
 [![Available on Hangar](https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/hangar_vector.svg)](https://hangar.papermc.io/danielmillar/MineLink)
-[![Available on Modrinth](https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/modrinth_vector.svg)](https://modrinth.com/plugin/minelink)
+[![Available on Modrinth](https://cdn.jsdelivr.net/npm/@intergrav/devins-badges@3/assets/cozy/available/modrinth_vector.svg)](https://modrinth.com/plugin/minelink-auth)
 
 [![Hangar downloads](https://img.shields.io/hangar/dt/MineLink?logo=paper&label=Hangar)](https://hangar.papermc.io/danielmillar/MineLink)
-[![Modrinth downloads](https://img.shields.io/modrinth/dt/minelink?logo=modrinth&label=Modrinth)](https://modrinth.com/plugin/minelink)
+[![Modrinth downloads](https://img.shields.io/modrinth/dt/minelink?logo=modrinth&label=Modrinth)](https://modrinth.com/plugin/minelink-auth)
 
 # MineLink
 
