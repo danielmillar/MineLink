@@ -1,6 +1,8 @@
 package dev.minelink.velocity.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -32,6 +34,52 @@ class MineLinkConfigTest {
             "https://sessionserver.minekeep.net/session/minecraft/hasJoined",
             cfg.upstreams().get("minekeep").hasJoinedUrl()
         );
+        assertEquals(
+            "https://sessionserver.mojang.com/session/minecraft/hasJoined",
+            cfg.upstreams().get("mojang").hasJoinedUrl()
+        );
+        assertFalse(cfg.directBridge().enabled());
+        assertEquals("0.0.0.0", cfg.directBridge().bindHost());
+        assertEquals(25566, cfg.directBridge().bindPort());
+        assertNull(cfg.directBridge().targetHost());
+    }
+
+    @Test
+    void parsesDirectBridgeConfigAndBuiltinMojangUpstream() {
+        List<String> warnings = new ArrayList<>();
+        MineLinkConfig cfg = MineLinkConfig.parse("""
+            order = ["minehut", "minekeep", "mojang"]
+
+            [direct-bridge]
+            enabled = true
+            bind = "[::]:25566"
+            target = "127.0.0.1:25577"
+            """, warnings::add);
+
+        assertTrue(warnings.isEmpty());
+        assertEquals(List.of("minehut", "minekeep", "mojang"), cfg.order());
+        assertTrue(cfg.directBridge().enabled());
+        assertEquals("::", cfg.directBridge().bindHost());
+        assertEquals(25566, cfg.directBridge().bindPort());
+        assertEquals("127.0.0.1", cfg.directBridge().targetHost());
+        assertEquals(25577, cfg.directBridge().targetPort());
+    }
+
+    @Test
+    void warnsWhenDirectBridgeEnabledWithoutMojangAndOnUnknownBridgeKeys() {
+        List<String> warnings = new ArrayList<>();
+        MineLinkConfig.parse("""
+            order = ["minehut", "minekeep"]
+
+            [direct-bridge]
+            enabled = true
+            bind = "0.0.0.0:25566"
+            extra = "ignored"
+            """, warnings::add);
+
+        assertEquals(2, warnings.size());
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("extra")));
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("mojang")));
     }
 
     @Test
@@ -106,7 +154,17 @@ class MineLinkConfigTest {
             "upstream-timeout-ms = 50",
             "deadline-ms = 99999",
             "stagger-ms = -1",
-            "stagger-ms = \"fast\""
+            "stagger-ms = \"fast\"",
+            "direct-bridge = true",
+            "[direct-bridge]\n\"enabled\" = true",
+            "[direct-bridge]\nenabled = \"yes\"",
+            "[direct-bridge]\nbind = 25566",
+            "[direct-bridge]\nbind = \"0.0.0.0\"",
+            "[direct-bridge]\nbind = \"0.0.0.0:0\"",
+            "[direct-bridge]\nbind = \"0.0.0.0:70000\"",
+            "[direct-bridge]\nbind = \":::25566\"",
+            "[direct-bridge]\nbind = \"[::]:abc\"",
+            "[direct-bridge]\ntarget = \"127.0.0.1\""
         );
 
         for (String toml : invalid) {
