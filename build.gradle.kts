@@ -1,5 +1,7 @@
 plugins {
     `java-library`
+    id("com.modrinth.minotaur") version "2.10.0"
+    id("io.papermc.hangar-publish-plugin") version "0.1.4"
 }
 
 val pluginVersion = providers.gradleProperty("version").get()
@@ -72,5 +74,37 @@ tasks.jar {
             "Implementation-Title" to "MineLink",
             "Implementation-Version" to pluginVersion,
         )
+    }
+}
+
+fun csvEnv(name: String) = providers.environmentVariable(name)
+    .map { raw -> raw.split(",").map(String::trim).filter(String::isNotEmpty) }
+    .orElse(emptyList())
+
+modrinth {
+    token.set(providers.environmentVariable("MODRINTH_TOKEN"))
+    projectId.set("minelink-auth")
+    versionNumber.set(pluginVersion)
+    versionName.set("MineLink v$pluginVersion")
+    versionType.set("release")
+    uploadFile.set(tasks.jar)
+    loaders.add("velocity")
+    gameVersions.set(csvEnv("MODRINTH_GAME_VERSIONS"))
+    changelog.set(providers.environmentVariable("RELEASE_CHANGELOG").orElse(""))
+}
+
+hangarPublish {
+    publications.register("plugin") {
+        version.set(pluginVersion)
+        channel.set("Release")
+        id.set("MineLink")
+        apiKey.set(providers.environmentVariable("HANGAR_API_TOKEN"))
+        changelog.set(providers.environmentVariable("RELEASE_CHANGELOG").orElse(""))
+        platforms {
+            velocity {
+                jar.set(tasks.jar.flatMap { it.archiveFile })
+                platformVersions.set(csvEnv("HANGAR_VELOCITY_VERSIONS"))
+            }
+        }
     }
 }
