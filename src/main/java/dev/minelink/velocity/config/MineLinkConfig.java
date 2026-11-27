@@ -24,7 +24,8 @@ public record MineLinkConfig(
     List<String> order,
     int upstreamTimeoutMs,
     int staggerMs,
-    int deadlineMs
+    int deadlineMs,
+    DirectBridgeConfig directBridge
 ) {
 
     public static final Map<String, Upstream> BUILTIN_UPSTREAMS;
@@ -35,7 +36,13 @@ public record MineLinkConfig(
         "upstream-timeout-ms",
         "stagger-ms",
         "deadline-ms",
-        "upstreams"
+        "upstreams",
+        "direct-bridge"
+    );
+    private static final Set<String> KNOWN_BRIDGE_KEYS = Set.of(
+        "enabled",
+        "bind",
+        "target"
     );
 
     static {
@@ -48,16 +55,31 @@ public record MineLinkConfig(
             "minekeep",
             "https://sessionserver.minekeep.net/session/minecraft/hasJoined"
         ));
+        map.put("mojang", new Upstream(
+            "mojang",
+            "https://sessionserver.mojang.com/session/minecraft/hasJoined"
+        ));
         BUILTIN_UPSTREAMS = Collections.unmodifiableMap(map);
     }
 
     public MineLinkConfig {
         upstreams = Collections.unmodifiableMap(new LinkedHashMap<>(upstreams));
         order = List.copyOf(order);
+        directBridge = directBridge != null ? directBridge : DirectBridgeConfig.disabled();
+    }
+
+    public MineLinkConfig(
+        Map<String, Upstream> upstreams,
+        List<String> order,
+        int upstreamTimeoutMs,
+        int staggerMs,
+        int deadlineMs
+    ) {
+        this(upstreams, order, upstreamTimeoutMs, staggerMs, deadlineMs, DirectBridgeConfig.disabled());
     }
 
     public static MineLinkConfig defaults() {
-        return new MineLinkConfig(BUILTIN_UPSTREAMS, DEFAULT_ORDER, 3500, 250, 4500);
+        return new MineLinkConfig(BUILTIN_UPSTREAMS, DEFAULT_ORDER, 3500, 250, 4500, DirectBridgeConfig.disabled());
     }
 
     public List<Upstream> orderedUpstreams() {
@@ -193,7 +215,126 @@ public record MineLinkConfig(
             );
         }
 
-        return new MineLinkConfig(upstreams, order, upstreamTimeoutMs, staggerMs, deadlineMs);
+        DirectBridgeConfig directBridge = parseDirectBridge(toml, warn);
+        if (directBridge.enabled() && !order.contains("mojang")) {
+            warn.accept(
+                "direct-bridge is enabled, but 'mojang' is not in order; direct players will fail authentication unless another configured upstream verifies them"
+            );
+        }
+
+        return new MineLinkConfig(upstreams, order, upstreamTimeoutMs, staggerMs, deadlineMs, directBridge);
+    }
+
+    private static DirectBridgeConfig parseDirectBridge(Toml toml, Consumer<String> warn) {
+        Toml bridgeTable;
+        try {
+            bridgeTable = toml.getTable("direct-bridge");
+        } catch (ClassCastException e) {
+            throw new IllegalArgumentException("direct-bridge must be a TOML table ([direct-bridge])", e);
+        }
+        if (bridgeTable == null) {
+            return DirectBridgeConfig.disabled();
+        }
+
+        for (Map.Entry<String, Object> entry : bridgeTable.entrySet()) {
+            String rawKey = entry.getKey();
+            String unquoted = stripQuotes(rawKey);
+            if (!rawKey.equals(unquoted) && KNOWN_BRIDGE_KEYS.contains(unquoted)) {
+                throw new IllegalArgumentException(
+                    "direct-bridge: do not quote key " + rawKey + " (use " + unquoted + ")"
+                );
+            }
+            if (!KNOWN_BRIDGE_KEYS.contains(rawKey)) {
+                warn.accept("Unknown direct-bridge key '" + rawKey + "' (ignored)");
+            }
+        }
+
+        boolean enabled = false;
+        if (bridgeTable.contains("enabled")) {
+            Boolean rawEnabled;
+            try {
+                rawEnabled = bridgeTable.getBoolean("enabled");
+            } catch (ClassCastException e) {
+                throw new IllegalArgumentException("direct-bridge.enabled must be a boolean", e);
+            }
+            if (rawEnabled == null) {
+                throw new IllegalArgumentException("direct-bridge.enabled must be a boolean");
+            }
+            enabled = rawEnabled;
+        }
+
+        HostPort bind = new HostPort(DirectBridgeConfig.DEFAULT_BIND_HOST, DirectBridgeConfig.DEFAULT_BIND_PORT);
+        if (bridgeTable.contains("bind")) {
+            String rawBind = getString(bridgeTable, "bind", "direct-bridge.bind");
+            bind = parseHostPort(rawBind, "direct-bridge.bind");
+        }
+
+        String targetHost = null;
+        int targetPort = 0;
+        if (bridgeTable.contains("target")) {
+            String rawTarget = getString(bridgeTable, "target", "direct-bridge.target").trim();
+            if (!rawTarget.isEmpty()) {
+                HostPort target = parseHostPort(rawTarget, "direct-bridge.target");
+                targetHost = target.host();
+                targetPort = target.port();
+            }
+        }
+
+        return new DirectBridgeConfig(enabled, bind.host(), bind.port(), targetHost, targetPort);
+    }
+
+    private static String getString(Toml table, String key, String displayName) {
+        try {
+            String val = table.getString(key);
+            if (val == null) {
+                throw new IllegalArgumentException(displayName + " must be a string");
+            }
+            return val;
+        } catch (ClassCastException e) {
+            throw new IllegalArgumentException(displayName + " must be a string", e);
+        }
+    }
+
+    private record HostPort(String host, int port) {}
+
+    private static HostPort parseHostPort(String raw, String fieldName) {
+        String trimmed = raw.trim();
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException(fieldName + " must be host:port");
+        }
+
+        String host;
+        String portStr;
+        if (trimmed.startsWith("[")) {
+            int closeBracket = trimmed.indexOf(']');
+            if (closeBracket <= 1 || closeBracket + 2 > trimmed.length() || trimmed.charAt(closeBracket + 1) != ':') {
+                throw new IllegalArgumentException(fieldName + " must be [ipv6]:port, got '" + raw + "'");
+            }
+            host = trimmed.substring(1, closeBracket).trim();
+            portStr = trimmed.substring(closeBracket + 2).trim();
+        } else {
+            int colon = trimmed.lastIndexOf(':');
+            if (colon <= 0 || trimmed.indexOf(':') != colon) {
+                throw new IllegalArgumentException(fieldName + " must be host:port (wrap IPv6 in brackets), got '" + raw + "'");
+            }
+            host = trimmed.substring(0, colon).trim();
+            portStr = trimmed.substring(colon + 1).trim();
+        }
+
+        if (host.isEmpty()) {
+            throw new IllegalArgumentException(fieldName + " host must not be empty");
+        }
+
+        int port;
+        try {
+            port = Integer.parseInt(portStr);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(fieldName + " has an invalid port: '" + portStr + "'", e);
+        }
+        if (port < 1 || port > 65_535) {
+            throw new IllegalArgumentException(fieldName + " port must be between 1 and 65535, got " + port);
+        }
+        return new HostPort(host, port);
     }
 
     private static String stripQuotes(String key) {

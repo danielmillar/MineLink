@@ -6,3 +6,7 @@ deadline-ms = 4500
 [upstreams]
 minehut = "https://api.minehut.com/mitm/proxy/session/minecraft/hasJoined"
 minekeep = "https://sessionserver.minekeep.net/session/minecraft/hasJoined"
+
+[direct-bridge]
+enabled = false
+bind = "0.0.0.0:25566"

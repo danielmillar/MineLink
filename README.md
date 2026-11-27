@@ -48,6 +48,10 @@ deadline-ms = 4500
 [upstreams]
 minehut = "https://api.minehut.com/mitm/proxy/session/minecraft/hasJoined"
 minekeep = "https://sessionserver.minekeep.net/session/minecraft/hasJoined"
+
+[direct-bridge]
+enabled = false
+bind = "0.0.0.0:25566"
 ```
 
 | Key | Default | Bounds | Role |
@@ -57,9 +61,28 @@ minekeep = "https://sessionserver.minekeep.net/session/minecraft/hasJoined"
 | `stagger-ms` | `250` | `0`–`20000` | Wait before firing the next upstream while the current one is still in flight (`0` queries all upstreams at once). |
 | `deadline-ms` | `4500` | `100`–`20000` | Hard ceiling for the whole login check; keep it at or above `upstream-timeout-ms` so the deadline doesn't cut off a single request early. |
 
+### Direct Mojang connections under `haproxy-protocol = true`
+
+When `haproxy-protocol = true` is enabled in `velocity.toml` (required for Minehut and shared with MineKeep), Velocity rejects direct Minecraft clients because they don't send a PROXY protocol header.
+
+MineLink includes a built-in `mojang` upstream (disabled by default) and an optional non-blocking **direct PROXY v2 bridge**. When enabled, MineLink listens on a second port, accepts raw Minecraft connections, prepends a PROXY protocol v2 header containing the client's real IP and port, and forwards the stream to Velocity over loopback:
+
+```toml
+order = ["minehut", "minekeep", "mojang"]
+
+[direct-bridge]
+enabled = true
+bind = "0.0.0.0:25566"
+# target = "127.0.0.1:25577" # optional; defaults to Velocity's bound port on loopback
+```
+
+- Keep Velocity's main port firewalled to Minehut, MineKeep, and `127.0.0.1` so nobody can spoof PROXY headers directly.
+- Expose only `direct-bridge.bind` to direct players—the bridge always generates a fresh PROXY v2 header from the actual TCP peer IP.
+- Reloading with `/minelink reload` leaves the bridge running without disconnecting players if `[direct-bridge]` settings haven't changed.
+
 ### Custom upstreams
 
-Both `minehut` and `minekeep` are built in, and direct Mojang verification stays off by default because both networks forbid bypassing their proxies. If an upstream ever changes its endpoint—or your setup allows another session server—add or override it under `[upstreams]` and list its ID in `order`:
+`minehut`, `minekeep`, and `mojang` are built in (`mojang` stays off by default because Minehut and MineKeep forbid bypassing their proxies). If an upstream ever changes its endpoint—or your setup allows another session server—add or override it under `[upstreams]` and list its ID in `order`:
 
 ```toml
 order = ["minehut", "custom", "minekeep"]

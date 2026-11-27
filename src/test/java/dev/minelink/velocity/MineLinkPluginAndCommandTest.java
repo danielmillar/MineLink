@@ -17,7 +17,12 @@ import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.config.ProxyConfig;
 import dev.minelink.velocity.command.MineLinkCommand;
+import java.io.DataInputStream;
 import java.lang.reflect.Proxy;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -153,6 +158,79 @@ class MineLinkPluginAndCommandTest {
         assertNull(System.getProperty(MineLinkPlugin.SESSION_SERVER_PROPERTY));
     }
 
+    @Test
+    void managesDirectBridgeLifecycleAcrossReloadsAndReportsInStatus(@TempDir Path dataDir) throws Exception {
+        InetAddress loopback = InetAddress.getByAddress(new byte[] {127, 0, 0, 1});
+        try (ServerSocket fakeVelocity = new ServerSocket(0, 8, loopback)) {
+            int velocityPort = fakeVelocity.getLocalPort();
+            int bridgePort;
+            try (ServerSocket portProbe = new ServerSocket(0, 1, loopback)) {
+                bridgePort = portProbe.getLocalPort();
+            }
+
+            AtomicReference<Command> registered = new AtomicReference<>();
+            ProxyServer proxy = stubProxy(
+                true,
+                new InetSocketAddress(InetAddress.getByName("0.0.0.0"), velocityPort),
+                registered
+            );
+            MineLinkPlugin plugin = new MineLinkPlugin(
+                proxy,
+                LoggerFactory.getLogger(MineLinkPluginAndCommandTest.class),
+                dataDir
+            );
+
+            try {
+                plugin.onProxyInitialize(new ProxyInitializeEvent());
+                assertFalse(plugin.isDirectBridgeActive());
+
+                Files.writeString(dataDir.resolve("config.toml"), """
+                    order = ["minehut", "minekeep", "mojang"]
+
+                    [direct-bridge]
+                    enabled = true
+                    bind = "127.0.0.1:%d"
+                    """.formatted(bridgePort));
+
+                SimpleCommand cmd = (SimpleCommand) registered.get();
+                List<String> reloadOut = new ArrayList<>();
+                cmd.execute(invocation(stubSource(true, reloadOut), "reload"));
+                assertTrue(reloadOut.stream().anyMatch(s -> s.contains("Config reloaded.")));
+                assertTrue(plugin.isDirectBridgeActive());
+                assertEquals(bridgePort, plugin.directBridgeBoundAddress().getPort());
+                assertEquals(velocityPort, plugin.directBridgeTargetAddress().getPort());
+                assertEquals("127.0.0.1", plugin.directBridgeTargetAddress().getAddress().getHostAddress());
+
+                List<String> statusOut = new ArrayList<>();
+                cmd.execute(invocation(stubSource(true, statusOut), "status"));
+                assertTrue(statusOut.stream().anyMatch(s -> s.contains("Direct bridge:") && s.contains("127.0.0.1:" + bridgePort)));
+
+                try (Socket client = new Socket(loopback, bridgePort);
+                     Socket accepted = fakeVelocity.accept()) {
+                    accepted.setSoTimeout(3_000);
+                    DataInputStream in = new DataInputStream(accepted.getInputStream());
+                    byte[] header = new byte[28];
+                    in.readFully(header);
+                    assertEquals(0x21, header[12] & 0xFF);
+                    assertEquals(0x11, header[13] & 0xFF);
+                    assertEquals(client.getLocalPort(), ((header[24] & 0xFF) << 8) | (header[25] & 0xFF));
+                }
+
+                Files.writeString(dataDir.resolve("config.toml"), """
+                    order = ["minehut", "minekeep"]
+
+                    [direct-bridge]
+                    enabled = false
+                    bind = "127.0.0.1:%d"
+                    """.formatted(bridgePort));
+                cmd.execute(invocation(stubSource(true, new ArrayList<>()), "reload"));
+                assertFalse(plugin.isDirectBridgeActive());
+            } finally {
+                plugin.onProxyShutdown(new ProxyShutdownEvent());
+            }
+        }
+    }
+
     private static SimpleCommand.Invocation invocation(CommandSource source, String... args) {
         return new SimpleCommand.Invocation() {
             @Override
@@ -190,6 +268,14 @@ class MineLinkPluginAndCommandTest {
     }
 
     private static ProxyServer stubProxy(boolean onlineMode, AtomicReference<Command> registeredCommand) {
+        return stubProxy(onlineMode, new InetSocketAddress("0.0.0.0", 25577), registeredCommand);
+    }
+
+    private static ProxyServer stubProxy(
+        boolean onlineMode,
+        InetSocketAddress boundAddress,
+        AtomicReference<Command> registeredCommand
+    ) {
         ProxyConfig config = (ProxyConfig) Proxy.newProxyInstance(
             ProxyConfig.class.getClassLoader(),
             new Class<?>[] {ProxyConfig.class},
@@ -232,6 +318,9 @@ class MineLinkPluginAndCommandTest {
                 }
                 if ("getCommandManager".equals(method.getName())) {
                     return commandManager;
+                }
+                if ("getBoundAddress".equals(method.getName())) {
+                    return boundAddress;
                 }
                 return defaultValue(method.getReturnType());
             }

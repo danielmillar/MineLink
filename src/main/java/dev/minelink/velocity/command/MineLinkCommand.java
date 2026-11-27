@@ -4,7 +4,10 @@ import com.velocitypowered.api.command.CommandSource;
 import com.velocitypowered.api.command.SimpleCommand;
 import dev.minelink.velocity.BuildConstants;
 import dev.minelink.velocity.MineLinkPlugin;
+import dev.minelink.velocity.config.DirectBridgeConfig;
 import dev.minelink.velocity.config.MineLinkConfig;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Locale;
 import net.kyori.adventure.text.Component;
@@ -122,6 +125,36 @@ public final class MineLinkCommand implements SimpleCommand {
             .build());
 
         source.sendMessage(field("Deadline", config.deadlineMs() + "ms"));
+
+        if (plugin.isDirectBridgeActive()) {
+            InetSocketAddress bound = plugin.directBridgeBoundAddress();
+            InetSocketAddress target = plugin.directBridgeTargetAddress();
+            int active = plugin.directBridgeActiveConnections();
+            source.sendMessage(Component.text()
+                .append(Component.text("Direct bridge: ", MUTED))
+                .append(Component.text(formatAddress(bound) + " → " + formatAddress(target), VALUE))
+                .append(Component.text(" (" + active + " active)", MUTED))
+                .build());
+        } else if (plugin.directBridgeError() != null) {
+            source.sendMessage(Component.text()
+                .append(Component.text("Direct bridge: ", MUTED))
+                .append(Component.text("Error (" + plugin.directBridgeError() + ")", ERROR))
+                .build());
+        } else {
+            source.sendMessage(Component.text()
+                .append(Component.text("Direct bridge: ", MUTED))
+                .append(Component.text("Disabled", DIM))
+                .build());
+        }
+    }
+
+    private static String formatAddress(InetSocketAddress address) {
+        if (address == null) {
+            return "unknown";
+        }
+        InetAddress addr = address.getAddress();
+        String host = addr != null ? addr.getHostAddress() : address.getHostString();
+        return DirectBridgeConfig.formatHostPort(host, address.getPort());
     }
 
     private static Component prefix() {
